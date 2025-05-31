@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Google Sheets → HTML‑таблица</title>
+  <style>
+      body { font-family: Arial, sans-serif; margin: 2rem; }
+      #status { margin-bottom: 1rem; color: #555; }
+      table { border-collapse: collapse; width: 100%; }
+      th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+      th { background-color: #f4f4f4; font-weight: bold; cursor: pointer; user-select: none; }
+      th.sorted-asc::after  { content: " \25B2"; }
+      th.sorted-desc::after { content: " \25BC"; }
+      .error { color: #c00; }
+  </style>
+</head>
+<body>
+  <h1>Плей-лист VOZDUH cover band</h1>
+  <div id="status">Загрузка…</div>
+  <table id="sheetTable">
+      <thead></thead>
+      <tbody></tbody>
+  </table>
+
+<script>
+(async () => {
+  /* ─────────────────────────────────────────────────────────────
+   * НАСТРОЙКИ
+   *   CSV_URL — опубликовать лист как CSV и вставить сюда полную ссылку.
+   *   Или оставить CSV_URL пустым и указать FILE_ID + (SHEET_NAME или GID).
+   * ───────────────────────────────────────────────────────────── */
+
+  const CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTZgZGGykD1HNYKZNzYNAUKc33t-GnlN2qR4eU4fUsS61SeP9TSJ6c6n6rHlBGAJZPwt0R9o6yH2STd/pub?gid=632671451&single=true&output=csv';
+  const FILE_ID = '';
+  const SHEET_NAME = '';
+  const GID = '';
+
+  /* ───────────────────────────────────────────────────────────── */
+
+  const statusEl = document.getElementById('status');
+  const table    = document.getElementById('sheetTable');
+  const thead    = table.querySelector('thead');
+  const tbody    = table.querySelector('tbody');
+
+  const finalUrl = CSV_URL || (
+    GID
+      ? `https://docs.google.com/spreadsheets/d/${FILE_ID}/gviz/tq?tqx=out:csv&gid=${GID}`
+      : `https://docs.google.com/spreadsheets/d/${FILE_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(SHEET_NAME)}`
+  );
+
+  const setStatus = (txt, isErr = false) => {
+      statusEl.textContent = txt;
+      statusEl.className = isErr ? 'error' : '';
+  };
+
+  async function fetchCsv(url) {
+      try {
+          const resp = await fetch(url);
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          return resp.text();
+      } catch (err) {
+          console.warn('Прямая загрузка не удалась, пробую через CORS‑прокси…', err);
+          const proxyUrl = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url);
+          const proxyResp = await fetch(proxyUrl);
+          if (!proxyResp.ok) throw new Error('Proxy HTTP ' + proxyResp.status);
+          return proxyResp.text();
+      }
+  }
+
+  function parseCsv(text) {
+      return text.trim().split(/\r?\n/).map(line => {
+          const cells = [];
+          let cur = '';
+          let inQuotes = false;
+          for (let i = 0; i < line.length; i++) {
+              const ch = line[i];
+              if (ch === '"') {
+                  inQuotes = !inQuotes;
+              } else if (ch === ',' && !inQuotes) {
+                  cells.push(cur.replace(/^"|"$/g, ''));
+                  cur = '';
+              } else {
+                  cur += ch;
+              }
+          }
+          cells.push(cur.replace(/^"|"$/g, ''));
+          return cells;
+      });
+  }
+
+  function buildTable(rows) {
+      // пропускаем первые две строки (метаданные)
+      const data = rows.slice(2);
+      if (!data.length) {
+          setStatus('Данные отсутствуют.');
+          return;
+      }
+
+      // убираем колонку «Порядок»
+      const rawHeader = data[0];
+      const excludeIdx = rawHeader.findIndex(h => h.trim().toLowerCase() === 'порядок');
+      const colIndices = rawHeader.map((_, i) => i).filter(i => i !== excludeIdx);
+
+      // отрисовываем заголовок
+      thead.innerHTML = '';
+      const headerRow = document.createElement('tr');
+      colIndices.forEach((origIdx, visibleIdx) => {
+          const th = document.createElement('th');
+          th.textContent = rawHeader[origIdx];
+          th.dataset.colIndex = visibleIdx; // индекс видимой колонки
+          th.addEventListener('click', () => sortBy(th));
+          headerRow.appendChild(th);
+      });
+      thead.appendChild(headerRow);
+
+      // строки данных
+      tbody.innerHTML = '';
+      data.slice(1).forEach(row => {
+          const tr = document.createElement('tr');
+          colIndices.forEach(i => {
+              const td = document.createElement('td');
+              td.textContent = row[i];
+              tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+      });
+  }
+
+  function sortBy(th) {
+      const colIdx = parseInt(th.dataset.colIndex, 10);
+      const isAsc = th.classList.contains('sorted-asc');
+
+      // убрать прежние стрелки
+      thead.querySelectorAll('th').forEach(el => el.classList.remove('sorted-asc', 'sorted-desc'));
+      th.classList.add(isAsc ? 'sorted-desc' : 'sorted-asc');
+
+      const rowsArr = Array.from(tbody.rows);
+      rowsArr.sort((a, b) => {
+          const aText = a.cells[colIdx].textContent.toLowerCase();
+          const bText = b.cells[colIdx].textContent.toLowerCase();
+          return aText.localeCompare(bText, 'ru', { sensitivity: 'base' }) * (isAsc ? -1 : 1);
+      });
+      rowsArr.forEach(tr => tbody.appendChild(tr));
+  }
+
+  try {
+      const csvText = await fetchCsv(finalUrl);
+      const rows = parseCsv(csvText);
+      buildTable(rows);
+      setStatus('Данные загружены');
+  } catch (err) {
+      console.error(err);
+      setStatus('Ошибка: не удалось загрузить данные. Проверьте ссылку и настройки публикации.', true);
+  }
+})();
+</script>
+</body>
+</html>
