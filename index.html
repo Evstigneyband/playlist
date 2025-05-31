@@ -2,22 +2,34 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <title>Google Sheets → HTML‑таблица</title>
+  <title>Плей‑лист VOZDUH cover band</title>
   <style>
       body { font-family: Arial, sans-serif; margin: 2rem; }
       #status { margin-bottom: 1rem; color: #555; }
-      table { border-collapse: collapse; width: 100%; }
+      table { border-collapse: collapse; width: 100%; margin-bottom: 2rem; }
       th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
       th { background-color: #f4f4f4; font-weight: bold; cursor: pointer; user-select: none; }
       th.sorted-asc::after  { content: " \25B2"; }
       th.sorted-desc::after { content: " \25BC"; }
+      tr.selected { background-color: #d7fdd7; }
+      /* фон всех строк во второй таблице */
+      #playlistTable tbody tr { background-color: #d7fdd7; }
       .error { color: #c00; }
   </style>
 </head>
 <body>
-  <h1>Плей-лист VOZDUH cover band</h1>
+  <h1>Плей‑лист VOZDUH cover band</h1>
   <div id="status">Загрузка…</div>
+
+  <!-- Основная таблица -->
   <table id="sheetTable">
+      <thead></thead>
+      <tbody></tbody>
+  </table>
+
+  <!-- Пользовательский плей‑лист -->
+  <h2>Выбранные песни (0 / 24)</h2>
+  <table id="playlistTable" style="display:none;">
       <thead></thead>
       <tbody></tbody>
   </table>
@@ -26,21 +38,22 @@
 (async () => {
   /* ─────────────────────────────────────────────────────────────
    * НАСТРОЙКИ
-   *   CSV_URL — опубликовать лист как CSV и вставить сюда полную ссылку.
-   *   Или оставить CSV_URL пустым и указать FILE_ID + (SHEET_NAME или GID).
    * ───────────────────────────────────────────────────────────── */
-
   const CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTZgZGGykD1HNYKZNzYNAUKc33t-GnlN2qR4eU4fUsS61SeP9TSJ6c6n6rHlBGAJZPwt0R9o6yH2STd/pub?gid=632671451&single=true&output=csv';
   const FILE_ID = '';
   const SHEET_NAME = '';
   const GID = '';
+  const MAX_SELECTION = 24;
 
   /* ───────────────────────────────────────────────────────────── */
-
-  const statusEl = document.getElementById('status');
-  const table    = document.getElementById('sheetTable');
-  const thead    = table.querySelector('thead');
-  const tbody    = table.querySelector('tbody');
+  const statusEl      = document.getElementById('status');
+  const table         = document.getElementById('sheetTable');
+  const thead         = table.querySelector('thead');
+  const tbody         = table.querySelector('tbody');
+  const playlistTable = document.getElementById('playlistTable');
+  const playlistHead  = playlistTable.querySelector('thead');
+  const playlistBody  = playlistTable.querySelector('tbody');
+  const playlistTitle = document.querySelector('h2');
 
   const finalUrl = CSV_URL || (
     GID
@@ -88,6 +101,57 @@
       });
   }
 
+  // Глобальное состояние выбранных песен: Map<rowKey, rowArray>
+  const selectedMap = new Map();
+  let visibleColIndices = [];
+
+  function updatePlaylistTitle() {
+      playlistTitle.textContent = `Выбранные песни (${selectedMap.size} / ${MAX_SELECTION})`;
+  }
+
+  function buildHeaders(rawHeader, targetHead, clickHandler) {
+      targetHead.innerHTML = '';
+      const tr = document.createElement('tr');
+      visibleColIndices.forEach((origIdx, visibleIdx) => {
+          const th = document.createElement('th');
+          th.textContent = rawHeader[origIdx];
+          th.dataset.colIndex = visibleIdx;
+          th.addEventListener('click', () => clickHandler(th));
+          tr.appendChild(th);
+      });
+      targetHead.appendChild(tr);
+  }
+
+  function getRowKey(row) {
+      // уникальный ключ: "Исполнитель|Песня|Язык|Вокал" (первые 4 видимых колонки)
+      return visibleColIndices.slice(0, 4).map(i => row[i]).join('|');
+  }
+
+  function addRowToPlaylist(row) {
+      const tr = document.createElement('tr');
+      visibleColIndices.forEach(i => {
+          const td = document.createElement('td');
+          td.textContent = row[i];
+          tr.appendChild(td);
+      });
+      const key = getRowKey(row);
+      tr.dataset.rowKey = key;
+      tr.addEventListener('click', () => toggleSelectionByKey(key));
+      playlistBody.appendChild(tr);
+  }
+
+  function removeRowFromPlaylist(key) {
+      const tr = playlistBody.querySelector(`tr[data-row-key="${CSS.escape(key)}"]`);
+      if (tr) playlistBody.removeChild(tr);
+  }
+
+  function toggleSelectionByKey(key) {
+      // Найти строку в первой таблице по ключу
+      const baseRow = tbody.querySelector(`tr[data-row-key="${CSS.escape(key)}"]`);
+      if (!baseRow) return;
+      baseRow.dispatchEvent(new Event('rowToggle')); // кастомное событие для единообразия
+  }
+
   function buildTable(rows) {
       // пропускаем первые две строки (метаданные)
       const data = rows.slice(2);
@@ -96,51 +160,63 @@
           return;
       }
 
-      // убираем колонку «Порядок»
+      // убрать колонку «Порядок»
       const rawHeader = data[0];
       const excludeIdx = rawHeader.findIndex(h => h.trim().toLowerCase() === 'порядок');
-      const colIndices = rawHeader.map((_, i) => i).filter(i => i !== excludeIdx);
+      visibleColIndices = rawHeader.map((_, i) => i).filter(i => i !== excludeIdx);
 
-      // отрисовываем заголовок
-      thead.innerHTML = '';
-      const headerRow = document.createElement('tr');
-      colIndices.forEach((origIdx, visibleIdx) => {
-          const th = document.createElement('th');
-          th.textContent = rawHeader[origIdx];
-          th.dataset.colIndex = visibleIdx; // индекс видимой колонки
-          th.addEventListener('click', () => sortBy(th));
-          headerRow.appendChild(th);
-      });
-      thead.appendChild(headerRow);
+      // шапки обеих таблиц
+      buildHeaders(rawHeader, thead, th => sortTable(th, tbody));
+      buildHeaders(rawHeader, playlistHead, th => sortTable(th, playlistBody));
 
-      // строки данных
+      // строки данных первой таблицы
       tbody.innerHTML = '';
       data.slice(1).forEach(row => {
           const tr = document.createElement('tr');
-          colIndices.forEach(i => {
+          visibleColIndices.forEach(i => {
               const td = document.createElement('td');
               td.textContent = row[i];
               tr.appendChild(td);
+          });
+          const key = getRowKey(row);
+          tr.dataset.rowKey = key;
+          tr.addEventListener('click', () => tr.dispatchEvent(new Event('rowToggle')));
+          tr.addEventListener('rowToggle', () => {
+              if (tr.classList.contains('selected')) {
+                  tr.classList.remove('selected');
+                  selectedMap.delete(key);
+                  removeRowFromPlaylist(key);
+              } else {
+                  if (selectedMap.size >= MAX_SELECTION) {
+                      alert(`Можно выбрать не более ${MAX_SELECTION} песен.`);
+                      return;
+                  }
+                  tr.classList.add('selected');
+                  selectedMap.set(key, row);
+                  addRowToPlaylist(row);
+              }
+              // показать/скрыть плей‑лист и обновить счётчик
+              playlistTable.style.display = selectedMap.size ? '' : 'none';
+              updatePlaylistTitle();
           });
           tbody.appendChild(tr);
       });
   }
 
-  function sortBy(th) {
+  function sortTable(th, targetBody) {
       const colIdx = parseInt(th.dataset.colIndex, 10);
       const isAsc = th.classList.contains('sorted-asc');
-
-      // убрать прежние стрелки
-      thead.querySelectorAll('th').forEach(el => el.classList.remove('sorted-asc', 'sorted-desc'));
+      // снять стрелки во ВСЕХ шапках текущей таблицы
+      th.parentElement.parentElement.querySelectorAll('th').forEach(el => el.classList.remove('sorted-asc', 'sorted-desc'));
       th.classList.add(isAsc ? 'sorted-desc' : 'sorted-asc');
 
-      const rowsArr = Array.from(tbody.rows);
+      const rowsArr = Array.from(targetBody.rows);
       rowsArr.sort((a, b) => {
           const aText = a.cells[colIdx].textContent.toLowerCase();
           const bText = b.cells[colIdx].textContent.toLowerCase();
           return aText.localeCompare(bText, 'ru', { sensitivity: 'base' }) * (isAsc ? -1 : 1);
       });
-      rowsArr.forEach(tr => tbody.appendChild(tr));
+      rowsArr.forEach(tr => targetBody.appendChild(tr));
   }
 
   try {
@@ -150,7 +226,7 @@
       setStatus('Данные загружены');
   } catch (err) {
       console.error(err);
-      setStatus('Ошибка: не удалось загрузить данные. Проверьте ссылку и настройки публикации.', true);
+      setStatus('Ошибка: не удалось загрузить данные.', true);
   }
 })();
 </script>
