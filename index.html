@@ -12,10 +12,15 @@
       th.sorted-asc::after  { content: " \25B2"; }
       th.sorted-desc::after { content: " \25BC"; }
       tr.selected { background-color: #d7fdd7; }
-      /* фон всех строк во второй таблице */
       #playlistTable tbody tr { background-color: #d7fdd7; }
       .error { color: #c00; }
+      #saveBtn { padding: 0.6rem 1.2rem; font-size: 1rem; cursor: pointer; }
+            /* кнопка перехода к списку сохранённых */
+      .list-btn { display:inline-block; margin-top:1rem; padding:0.8rem 1.4rem; background:#9d82ba; color:#fff; border-radius:4px; text-decoration:none; font-size:1rem; }
+      .list-btn:hover { background:#8462a8; }
   </style>
+  <!-- Supabase JS SDK -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
   <h1>Плей‑лист VOZDUH cover band</h1>
@@ -28,24 +33,32 @@
   </table>
 
   <!-- Пользовательский плей‑лист -->
-  <h2>Выбранные песни (0 / 24)</h2>
+  <h2 id="playlistTitle">Выбранные песни (0 / 24)</h2>
   <table id="playlistTable" style="display:none;">
       <thead></thead>
       <tbody></tbody>
   </table>
 
+  <button id="saveBtn" style="display:none;">Сохранить плей‑лист</button>
+    <br>
+  <!-- ссылка на страницу списка сохранённых плей‑листов -->
+  <a class="list-btn" href="https://evstigneyband.github.io/playlists/">Смотреть плей‑листы</a>
+
 <script>
 (async () => {
   /* ─────────────────────────────────────────────────────────────
-   * НАСТРОЙКИ
+   * НАСТРОЙКИ (Google Sheets + Supabase)
    * ───────────────────────────────────────────────────────────── */
   const CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTZgZGGykD1HNYKZNzYNAUKc33t-GnlN2qR4eU4fUsS61SeP9TSJ6c6n6rHlBGAJZPwt0R9o6yH2STd/pub?gid=632671451&single=true&output=csv';
-  const FILE_ID = '';
-  const SHEET_NAME = '';
-  const GID = '';
   const MAX_SELECTION = 24;
 
+  // ← ВСТАВЬТЕ свои данные Supabase, таблица playlists (id uuid pk, name text, songs jsonb)
+  const SUPABASE_URL      = 'https://xvoswhneclxpgtqjxmnt.supabase.co';
+  const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2b3N3aG5lY2x4cGd0cWp4bW50Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDg3MjI1MzcsImV4cCI6MjA2NDI5ODUzN30.rX7Gbj5WWHjA6PE1F1yY_GgGgGpwO6-L8BuYiYEvfaY';
+  const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
   /* ───────────────────────────────────────────────────────────── */
+
   const statusEl      = document.getElementById('status');
   const table         = document.getElementById('sheetTable');
   const thead         = table.querySelector('thead');
@@ -53,19 +66,15 @@
   const playlistTable = document.getElementById('playlistTable');
   const playlistHead  = playlistTable.querySelector('thead');
   const playlistBody  = playlistTable.querySelector('tbody');
-  const playlistTitle = document.querySelector('h2');
-
-  const finalUrl = CSV_URL || (
-    GID
-      ? `https://docs.google.com/spreadsheets/d/${FILE_ID}/gviz/tq?tqx=out:csv&gid=${GID}`
-      : `https://docs.google.com/spreadsheets/d/${FILE_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(SHEET_NAME)}`
-  );
+  const playlistTitle = document.getElementById('playlistTitle');
+  const saveBtn       = document.getElementById('saveBtn');
 
   const setStatus = (txt, isErr = false) => {
       statusEl.textContent = txt;
       statusEl.className = isErr ? 'error' : '';
   };
 
+  /* ─────────────  Загрузка CSV  ───────────── */
   async function fetchCsv(url) {
       try {
           const resp = await fetch(url);
@@ -80,6 +89,7 @@
       }
   }
 
+  /* Простой, но устойчивый CSV‑парсер */
   function parseCsv(text) {
       return text.trim().split(/\r?\n/).map(line => {
           const cells = [];
@@ -88,33 +98,37 @@
           for (let i = 0; i < line.length; i++) {
               const ch = line[i];
               if (ch === '"') {
-                  inQuotes = !inQuotes;
+                  // две кавычки подряд → экранированная кавычка
+                  if (i + 1 < line.length && line[i + 1] === '"') { cur += '"'; i++; }
+                  else inQuotes = !inQuotes;
               } else if (ch === ',' && !inQuotes) {
-                  cells.push(cur.replace(/^"|"$/g, ''));
+                  cells.push(cur);
                   cur = '';
               } else {
                   cur += ch;
               }
           }
-          cells.push(cur.replace(/^"|"$/g, ''));
-          return cells;
+          cells.push(cur);
+          return cells.map(c => c.replace(/^"|"$/g, '').trim());
       });
   }
 
-  // Глобальное состояние выбранных песен: Map<rowKey, rowArray>
-  const selectedMap = new Map();
+  /* ─────────────  Таблица и взаимодействие  ───────────── */
+  const selectedMap = new Map(); // Map<rowKey, rowArray>
   let visibleColIndices = [];
+  let rawHeader = [];
 
   function updatePlaylistTitle() {
       playlistTitle.textContent = `Выбранные песни (${selectedMap.size} / ${MAX_SELECTION})`;
+      saveBtn.style.display = selectedMap.size ? '' : 'none';
   }
 
-  function buildHeaders(rawHeader, targetHead, clickHandler) {
+  function buildHeaders(header, targetHead, clickHandler) {
       targetHead.innerHTML = '';
       const tr = document.createElement('tr');
       visibleColIndices.forEach((origIdx, visibleIdx) => {
           const th = document.createElement('th');
-          th.textContent = rawHeader[origIdx];
+          th.textContent = header[origIdx];
           th.dataset.colIndex = visibleIdx;
           th.addEventListener('click', () => clickHandler(th));
           tr.appendChild(th);
@@ -123,7 +137,6 @@
   }
 
   function getRowKey(row) {
-      // уникальный ключ: "Исполнитель|Песня|Язык|Вокал" (первые 4 видимых колонки)
       return visibleColIndices.slice(0, 4).map(i => row[i]).join('|');
   }
 
@@ -146,32 +159,43 @@
   }
 
   function toggleSelectionByKey(key) {
-      // Найти строку в первой таблице по ключу
       const baseRow = tbody.querySelector(`tr[data-row-key="${CSS.escape(key)}"]`);
       if (!baseRow) return;
-      baseRow.dispatchEvent(new Event('rowToggle')); // кастомное событие для единообразия
+      baseRow.dispatchEvent(new Event('rowToggle'));
+  }
+
+  function sortTable(th, targetBody) {
+      const colIdx = parseInt(th.dataset.colIndex, 10);
+      const isAsc = th.classList.contains('sorted-asc');
+      th.parentElement.parentElement.querySelectorAll('th').forEach(el => el.classList.remove('sorted-asc', 'sorted-desc'));
+      th.classList.add(isAsc ? 'sorted-desc' : 'sorted-asc');
+      const rowsArr = Array.from(targetBody.rows);
+      rowsArr.sort((a, b) => {
+          const aText = a.cells[colIdx].textContent.toLowerCase();
+          const bText = b.cells[colIdx].textContent.toLowerCase();
+          return aText.localeCompare(bText, 'ru', { sensitivity: 'base' }) * (isAsc ? -1 : 1);
+      });
+      rowsArr.forEach(tr => targetBody.appendChild(tr));
   }
 
   function buildTable(rows) {
-      // пропускаем первые две строки (метаданные)
-      const data = rows.slice(2);
-      if (!data.length) {
-          setStatus('Данные отсутствуют.');
-          return;
-      }
+      /* Ищем строку‑заголовок: содержит "Исполнитель" */
+      const headerIdx = rows.findIndex(r => r.some(c => c.trim().toLowerCase() === 'исполнитель'));
+      if (headerIdx === -1) { setStatus('Не найден заголовок в CSV', true); return; }
 
-      // убрать колонку «Порядок»
-      const rawHeader = data[0];
+      const data = rows.slice(headerIdx);
+      rawHeader = data[0];
+
+      // исключаем колонку «Порядок» (если есть)
       const excludeIdx = rawHeader.findIndex(h => h.trim().toLowerCase() === 'порядок');
       visibleColIndices = rawHeader.map((_, i) => i).filter(i => i !== excludeIdx);
 
-      // шапки обеих таблиц
       buildHeaders(rawHeader, thead, th => sortTable(th, tbody));
       buildHeaders(rawHeader, playlistHead, th => sortTable(th, playlistBody));
 
-      // строки данных первой таблицы
       tbody.innerHTML = '';
       data.slice(1).forEach(row => {
+          if (row.length < Math.max(...visibleColIndices)+1) return; // пропускаем пустые строки
           const tr = document.createElement('tr');
           visibleColIndices.forEach(i => {
               const td = document.createElement('td');
@@ -195,7 +219,6 @@
                   selectedMap.set(key, row);
                   addRowToPlaylist(row);
               }
-              // показать/скрыть плей‑лист и обновить счётчик
               playlistTable.style.display = selectedMap.size ? '' : 'none';
               updatePlaylistTitle();
           });
@@ -203,27 +226,31 @@
       });
   }
 
-  function sortTable(th, targetBody) {
-      const colIdx = parseInt(th.dataset.colIndex, 10);
-      const isAsc = th.classList.contains('sorted-asc');
-      // снять стрелки во ВСЕХ шапках текущей таблицы
-      th.parentElement.parentElement.querySelectorAll('th').forEach(el => el.classList.remove('sorted-asc', 'sorted-desc'));
-      th.classList.add(isAsc ? 'sorted-desc' : 'sorted-asc');
-
-      const rowsArr = Array.from(targetBody.rows);
-      rowsArr.sort((a, b) => {
-          const aText = a.cells[colIdx].textContent.toLowerCase();
-          const bText = b.cells[colIdx].textContent.toLowerCase();
-          return aText.localeCompare(bText, 'ru', { sensitivity: 'base' }) * (isAsc ? -1 : 1);
+  /* ─────────────  Сохранение в Supabase  ───────────── */
+  async function savePlaylist() {
+      if (!selectedMap.size) return;
+      const defaultName = new Date().toLocaleDateString('ru-RU') + ' - свадьба ...';
+      const name = prompt('Введите название плей‑листа (пример: 22.09.2025 - свадьба Алины и Сергея):', defaultName);
+      if (!name) return;
+      const songs = Array.from(selectedMap.values()).map(row => {
+          const obj = {};
+          visibleColIndices.forEach(colIdx => { obj[rawHeader[colIdx]] = row[colIdx]; });
+          return obj;
       });
-      rowsArr.forEach(tr => targetBody.appendChild(tr));
+      setStatus('Сохраняю плей‑лист…');
+      const { error } = await sb.from('playlists').insert([{ name, songs }]);
+      if (error) { console.error(error); setStatus('Ошибка при сохранении: ' + error.message, true); }
+      else { setStatus('Плей‑лист сохранён!'); }
   }
+  saveBtn.addEventListener('click', savePlaylist);
 
+  /* ─────────────  Главный поток  ───────────── */
   try {
-      const csvText = await fetchCsv(finalUrl);
+      const csvText = await fetchCsv(CSV_URL);
       const rows = parseCsv(csvText);
       buildTable(rows);
-      setStatus('Данные загружены');
+      if (!tbody.rows.length) setStatus('Не удалось построить таблицу');
+      else setStatus('Данные загружены');
   } catch (err) {
       console.error(err);
       setStatus('Ошибка: не удалось загрузить данные.', true);
