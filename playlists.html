@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Плей‑листы VOZDUH cover band</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+      body { font-family: Arial, sans-serif; margin: 2rem; }
+      #status { margin-bottom: 1rem; color: #555; }
+      .playlist-btn { display:block; width:100%; text-align:left; margin:0.4rem 0; padding:0.6rem 0.8rem; border:1px solid #ddd; background:#f4f4f4; cursor:pointer; font-size:1rem; }
+      .playlist-btn:hover { background:#eaeaea; }
+      .playlist-btn.selected { background:#c6eec6; }
+      table { border-collapse: collapse; width: 100%; margin-top:2rem; margin-bottom: 1rem; }
+      th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+      th { background-color: #f4f4f4; font-weight: bold; cursor: pointer; user-select: none; }
+      th.sorted-asc::after  { content: " \25B2"; }
+      th.sorted-desc::after { content: " \25BC"; }
+      tbody tr { background-color: #d7fdd7; cursor: grab; }
+      .sortable-chosen { opacity: 0.7; }
+      .sortable-ghost  { outline: 2px dashed #555; }
+      .error { color: #c00; }
+      .create-btn, .save-btn { display:inline-block; margin-top: 1rem; padding:0.8rem 1.4rem; background:#4caf50; color:#fff; border-radius:4px; text-decoration:none; font-size:1rem; cursor:pointer; border:none; }
+      .create-btn:hover { background:#43a047; }
+      .save-btn { background:#9c27b0; }
+      .save-btn:hover { background:#8e24aa; }
+  </style>
+  <!-- Supabase JS SDK -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <!-- SortableJS для drag‑and‑drop -->
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+</head>
+<body>
+  <h1>Плей‑листы VOZDUH cover band</h1>
+  <div id="status">Загрузка…</div>
+
+  <div id="playlistList"></div>
+
+  <table id="playlistTable" style="display:none;">
+      <thead></thead>
+      <tbody></tbody>
+  </table>
+
+  <button id="saveOrderBtn" class="save-btn" style="display:none;">Сохранить плей‑лист</button>
+  <a href="https://evstigneyband.github.io/playlist" class="create-btn">Создать новый плей‑лист</a>
+
+<script>
+(async () => {
+  const SUPABASE_URL  = 'https://xvoswhneclxpgtqjxmnt.supabase.co';
+  const SUPABASE_KEY  = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2b3N3aG5lY2x4cGd0cWp4bW50Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDg3MjI1MzcsImV4cCI6MjA2NDI5ODUzN30.rX7Gbj5WWHjA6PE1F1yY_GgGgGpwO6-L8BuYiYEvfaY';
+  const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+  const statusEl = document.getElementById('status');
+  const listDiv  = document.getElementById('playlistList');
+  const table    = document.getElementById('playlistTable');
+  const thead    = table.querySelector('thead');
+  const tbody    = table.querySelector('tbody');
+  const saveBtn  = document.getElementById('saveOrderBtn');
+
+  const ADMIN_PASS = 'vozduhtrio';
+  const PREF_ORDER = ['Исполнитель','Песня','Язык','Вокал','Вокал Егор/Дора'];
+
+  let currentId   = null;
+  let headerOrder = [];
+  let sortable    = null;
+
+  const setStatus = (txt, err = false) => { statusEl.textContent = txt; statusEl.className = err?'error':''; };
+
+  /* ---------- список плей‑листов ---------- */
+  async function loadList(){
+    setStatus('Загружаю список…');
+    const {data,error}=await sb.from('playlists').select('id,name').order('created_at',{ascending:false});
+    if(error){setStatus('Ошибка: '+error.message,true);return;}
+    if(!data.length){setStatus('Список плей‑листов пуст');return;}
+    listDiv.innerHTML='';
+    data.forEach(pl=>{
+      const b=document.createElement('button');
+      b.className='playlist-btn';
+      b.textContent=pl.name;
+      b.dataset.id=pl.id;
+      b.onclick=()=>selectPlaylist(b);
+      listDiv.appendChild(b);
+    });
+    setStatus('Выберите плей‑лист');
+  }
+
+  async function selectPlaylist(btn){
+    listDiv.querySelectorAll('.playlist-btn').forEach(x=>x.classList.remove('selected'));
+    btn.classList.add('selected');
+    currentId=btn.dataset.id;
+    await loadPlaylist(btn.textContent);
+    window.scrollTo({top:table.offsetTop-20,behavior:'smooth'});
+  }
+
+  /* ---------- вывод таблицы ---------- */
+  function buildHeader(order){
+    thead.innerHTML='';
+    const tr=document.createElement('tr');
+    order.forEach((h,i)=>{
+      const th=document.createElement('th');
+      th.textContent=h;
+      th.dataset.idx=i;
+      th.onclick=()=>sortBy(th);
+      tr.appendChild(th);
+    });
+    thead.appendChild(tr);
+  }
+
+  function sortBy(th){
+    const idx=+th.dataset.idx;
+    const asc=!th.classList.contains('sorted-asc');
+    thead.querySelectorAll('th').forEach(x=>x.classList.remove('sorted-asc','sorted-desc'));
+    th.classList.add(asc?'sorted-asc':'sorted-desc');
+    [...tbody.rows].sort((a,b)=>a.cells[idx].textContent.localeCompare(b.cells[idx].textContent,'ru',{sensitivity:'base'})*(asc?1:-1)).forEach(r=>tbody.appendChild(r));
+    initDrag();
+  }
+
+  function initDrag(){
+    if(sortable) sortable.destroy();
+    sortable=Sortable.create(tbody,{animation:150,ghostClass:'sortable-ghost',chosenClass:'sortable-chosen',delay:180,delayOnTouchOnly:true,touchStartThreshold:4});
+  }
+
+  async function loadPlaylist(name){
+    setStatus(`Загружаю: ${name}…`);
+    const {data,error}=await sb.from('playlists').select('songs').eq('id',currentId).single();
+    if(error){setStatus('Ошибка: '+error.message,true);return;}
+    const songs=data.songs||[];
+    if(!songs.length){setStatus('Плей‑лист пуст');return;}
+    headerOrder=[...PREF_ORDER.filter(h=>h in songs[0]),...Object.keys(songs[0]).filter(k=>!PREF_ORDER.includes(k))];
+    buildHeader(headerOrder);
+    tbody.innerHTML='';
+    songs.forEach(song=>{
+      const tr=document.createElement('tr');
+      headerOrder.forEach(h=>{const td=document.createElement('td');td.textContent=song[h]||'';tr.appendChild(td);});
+      tbody.appendChild(tr);
+    });
+    table.style.display='';
+    saveBtn.style.display='';
+    initDrag();
+    setStatus('Перетаскивайте строки и нажмите «Сохранить плей‑лист»');
+  }
+
+  /* ---------- сохранение ---------- */
+  async function saveOrder(){
+    if(!currentId) return;
+    const pwd = prompt('Введите пароль администратора:');
+    if(pwd !== ADMIN_PASS){ alert('Неверный пароль'); return; }
+
+    // сформировать массив песен в текущем порядке
+    const songs = [...tbody.rows].map(r => {
+      const obj = {};
+      headerOrder.forEach((h,i)=> obj[h] = r.cells[i].textContent);
+      return obj;
+    });
+
+    setStatus('Сохраняю…');
+    const { error } = await sb
+        .from('playlists')
+        .update({ songs })
+        .eq('id', currentId)
+        .select(); // заставляем вернуть строку и тем самым убедиться, что UPDATE прошёл RLS
+
+    if(error){
+      setStatus('Ошибка при сохранении: '+error.message, true);
+      console.error(error);
+    } else {
+      setStatus('Порядок сохранён! Обновляю данные…');
+      await loadPlaylist(listDiv.querySelector('.playlist-btn.selected').textContent); // перезагрузить
+    }
+  }
+  saveBtn.onclick = saveOrder;
+
+  /* ---------- запуск ---------- */
+  loadList();
+})();
+</script>
+</body>
+</html>
